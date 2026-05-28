@@ -1,8 +1,8 @@
-FROM python:3.11-slim
+FROM node:18-slim
 
 RUN apt-get update && apt-get install -y \
-  nodejs npm ffmpeg curl \
-  && pip install yt-dlp \
+  python3 python3-pip ffmpeg curl \
+  && pip3 install yt-dlp --break-system-packages \
   && apt-get clean
 
 WORKDIR /app
