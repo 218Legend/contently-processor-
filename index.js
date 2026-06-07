@@ -10,30 +10,23 @@ async function analyseWithClaude(meta) {
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       messages: [{
         role: 'user',
         content: `Analyse this viral video and return ONLY a JSON object with no markdown or backticks:
-{
-  "hook_style": "one sentence describing how the video opens",
-  "shot_types": ["shot 1", "shot 2", "shot 3"],
-  "pacing": "one sentence about the edit pace",
-  "cta": "one sentence about the call to action",
-  "script_notes": "one sentence about the script or dialogue style",
-  "edit_brief": "one sentence describing the edit approach",
-  "effort_rating": 4
-}
+{"hook_style":"one sentence","shot_types":["shot 1","shot 2"],"pacing":"one sentence","cta":"one sentence","script_notes":"one sentence","edit_brief":"one sentence","effort_rating":4}
 
-Video title: ${meta.title}
+Title: ${meta.title}
 Duration: ${meta.duration} seconds
 Views: ${meta.view_count}
-Description: ${meta.description || 'none'}`
+Description: ${(meta.description || '').slice(0, 500)}`
       }]
     })
   })
-  const data = await response.json()
-  const text = data.content[0].text
+  const data = await reconst http = require('http')
+const { execSync } = re.stringify(data))
+  const text = data.content[0].text.replace(/```json|```/g, '').trim()
   return JSON.parse(text)
 }
 
@@ -58,26 +51,13 @@ const server = http.createServer((req, res) => {
       try {
         const { url } = JSON.parse(body)
         if (!url) { res.writeHead(400); res.end(JSON.stringify({ error: 'URL required' })); return }
-        
         const raw = execSync(`yt-dlp --dump-json --no-download "${url}"`, { timeout: 30000 }).toString()
         const meta = JSON.parse(raw)
         const analysis = await analyseWithClaude(meta)
-        
         res.writeHead(200)
-        res.end(JSON.stringify({
-          success: true,
-          data: {
-            title: meta.title,
-            duration: meta.duration,
-            view_count: meta.view_count,
-            like_count: meta.like_count,
-            uploader: meta.uploader,
-            thumbnail: meta.thumbnail,
-            url: url,
-            ...analysis
-          }
-        }))
+        res.end(JSON.stringify({ success: true, data: { title: meta.title, duration: meta.duration, view_count: meta.view_count, like_count: meta.like_count, uploader: meta.uploader, thumbnail: meta.thumbnail, url, ...analysis } }))
       } catch (err) {
+        console.error('Error:', err.message)
         res.writeHead(500)
         res.end(JSON.stringify({ error: 'Processing failed', detail: err.message }))
       }
