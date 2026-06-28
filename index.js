@@ -194,7 +194,13 @@ filming_needs: list 3-5 specific items the creator needs. Be concrete — not "g
   const raw  = data.content[0].text || ''
   const text = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim()
   if (!text) throw new Error('Claude returned empty text. Stop reason: ' + data.stop_reason)
-  return JSON.parse(text)
+  console.log('[claude] stop_reason:', data.stop_reason, '| text length:', text.length, '| last 120 chars:', JSON.stringify(text.slice(-120)))
+  try {
+    return JSON.parse(text)
+  } catch (parseErr) {
+    console.error('[claude] JSON parse failed. First 300:', text.slice(0, 300))
+    throw parseErr
+  }
 }
 
 // ── server ─────────────────────────────────────────────────────────────────────
