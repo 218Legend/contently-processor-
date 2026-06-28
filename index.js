@@ -175,7 +175,7 @@ filming_needs: list 3-5 specific items the creator needs. Be concrete — not "g
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2400,
+      max_tokens: 4096,
       messages: [{
         role: 'user',
         content: [
@@ -191,7 +191,9 @@ filming_needs: list 3-5 specific items the creator needs. Be concrete — not "g
     console.error('Claude response unexpected:', JSON.stringify(data))
     throw new Error('Claude returned no content: ' + JSON.stringify(data))
   }
-  const text = data.content[0].text.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
+  const raw  = data.content[0].text || ''
+  const text = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim()
+  if (!text) throw new Error('Claude returned empty text. Stop reason: ' + data.stop_reason)
   return JSON.parse(text)
 }
 
