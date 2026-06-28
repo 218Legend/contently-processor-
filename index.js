@@ -42,22 +42,20 @@ function downloadVideo(url, workDir) {
 function makeContactSheet(videoPath, workDir) {
   const sheetPath = path.join(workDir, 'sheet.jpg')
 
-  // Primary: scene-change detection (threshold 0.25 catches most social-media cuts)
-  // Creates a tiled grid from all detected cut-points
+  // Primary: scene-change detection — cap at 3x5=15 frames to keep response within token limits
   try {
     execSync(
-      `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.25)',scale=320:-1,tile=4x6" -vsync vfr -frames:v 1 "${sheetPath}" -y 2>/dev/null`,
+      `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.3)',scale=280:-1,tile=3x5" -vsync vfr -frames:v 1 "${sheetPath}" -y 2>/dev/null`,
       { timeout: 60000 }
     )
-    // >5 KB means real frames were extracted (not just a blank grid)
     if (fs.existsSync(sheetPath) && fs.statSync(sheetPath).size > 5000) {
       return sheetPath
     }
   } catch {}
 
-  // Fallback: uniform sampling every 2 seconds — catches static/low-cut videos
+  // Fallback: uniform sampling every 5 seconds — capped at 15 frames
   execSync(
-    `ffmpeg -i "${videoPath}" -vf "fps=1/2,scale=320:-1,tile=4x6" -frames:v 1 "${sheetPath}" -y`,
+    `ffmpeg -i "${videoPath}" -vf "fps=1/5,scale=280:-1,tile=3x5" -frames:v 1 "${sheetPath}" -y`,
     { timeout: 60000 }
   )
   return sheetPath
@@ -156,6 +154,7 @@ Rules for shot_types array:
 - tip: be specific to THIS shot — not generic advice
 - mood_query: concise Pinterest search for mood/visual reference — e.g. "close up woman mirror selfie fitting room outfit"
 - List shots in EXACT chronological order
+- Maximum 12 shots total — group similar consecutive frames into one shot if needed
 
 Difficulty scale for effort_rating (be honest — overrating is better than underrating):
 1-2: Single talking head, one location, under 30s, no effects
