@@ -89,11 +89,11 @@ async function analyseWithClaude(meta, contactSheetB64, transcription) {
     .map(s => `[${s.start}-${s.end}s] ${s.text}`)
     .join('\n')
 
-  const prompt = `You are analysing a viral short-form video to teach a creator how to recreate it shot-for-shot.
+  const prompt = `You are a professional video director analysing a viral short-form video to produce a shot-by-shot recreation brief for a creator.
 
 You are given:
-1. A CONTACT SHEET: a grid of frames captured at scene changes (left→right, top→bottom = chronological order). Each cell is one real cut point.
-2. The TRANSCRIPT with timestamps.
+1. A CONTACT SHEET: frames captured at scene changes, left→right / top→bottom = chronological order. Each cell = one real cut point.
+2. A TRANSCRIPT with timestamps.
 3. Video metadata.
 
 Metadata:
@@ -111,25 +111,60 @@ ${segmentSummary || '(none)'}
 Return ONLY a valid JSON object — no markdown, no backticks, just the raw JSON:
 
 {
+  "_v": 2,
   "hook_style": "One sentence: what specifically happens in the first 1-3 seconds to grab attention",
-  "shot_types": [
-    "Shot 1: [framing] — [subject/action] — [camera movement/style]",
-    "Shot 2: ...",
-    ...
-  ],
-  "pacing": "One sentence on cut rhythm and energy",
-  "audio_style": "One sentence: voice-driven / music-driven / mix, plus where SFX or beat-cuts occur",
-  "cta": "The closing call-to-action, or 'none'",
+  "pacing": "One sentence on cut rhythm and energy level",
+  "audio_style": "One sentence: voice-driven / music-driven / mix, beat-cut moments",
+  "cta": "The closing call-to-action or 'none'",
   "script_notes": "Core message and narrative arc in 1-2 sentences",
-  "edit_brief": "Key post-production notes: text overlays, music feel, color grade, transition types",
-  "effort_rating": <integer 1-10>
+  "edit_brief": "Key post-production notes: text overlays, music feel, color grade, transitions",
+  "effort_rating": 7,
+  "difficulty_reason": "One sentence: what specifically makes this hard or easy to recreate",
+  "filming_needs": ["concrete item 1", "concrete item 2", "concrete item 3"],
+  "shot_types": [
+    {
+      "section": "hook",
+      "type": "talking_head",
+      "framing": "Camera angle and composition — e.g. Medium close-up, face centered, static",
+      "action": "What the person physically does — e.g. Walks toward camera smiling",
+      "script": "Exact words spoken in this shot, or 'no dialogue'",
+      "duration_sec": 3,
+      "text_overlay": "On-screen text/caption visible, or 'none'",
+      "audio_note": "Music cue / beat drop / SFX / silence note for this shot",
+      "energy": 4,
+      "tip": "One specific actionable tip to nail this exact shot",
+      "mood_query": "pinterest search query for visual reference 5-8 words"
+    }
+  ]
 }
 
-Rules for shot_types:
-- One entry per DISTINCT CUT — group frames that look like the same continuous shot.
-- Framing: extreme close-up / close-up / medium / wide / overhead / POV.
-- Be specific: name the subject (face, hands, product, environment), note on-screen text, describe camera movement (static / handheld / tracking / zoom).
-- List shots in the EXACT order they appear. This is the creator's shot list to follow.`
+Rules for shot_types array:
+- One entry per DISTINCT CUT. Group consecutive frames that look like one continuous shot.
+- section must be exactly one of: hook / body / cta
+  - hook: the opening 1-3 seconds — the pattern interrupt that stops the scroll. Usually the first 1-2 shots.
+  - body: everything in the middle — the proof, story, demo, retention beats
+  - cta: the closing ask — "follow for more", "comment below", "link in bio". Usually the final 1-2 shots. If no explicit CTA, mark the last shot 'cta' anyway.
+- type must be exactly one of: talking_head / b_roll / transition / text_card
+  - talking_head: person directly addressing camera
+  - b_roll: supplementary footage (product, location, action without direct camera address)
+  - transition: quick movement/zoom/spin used as a cut device
+  - text_card: frame is primarily on-screen text
+- framing: use exact terms — extreme close-up / close-up / medium / wide / overhead / POV
+- script: quote transcript text if it matches this shot's timecode, else 'no dialogue'
+- text_overlay: quote any visible captions or stickers exactly as shown, else 'none'
+- energy: 1 (calm/slow) to 5 (high energy/fast)
+- tip: be specific to THIS shot — not generic advice
+- mood_query: concise Pinterest search for mood/visual reference — e.g. "close up woman mirror selfie fitting room outfit"
+- List shots in EXACT chronological order
+
+Difficulty scale for effort_rating (be honest — overrating is better than underrating):
+1-2: Single talking head, one location, under 30s, no effects
+3-4: Talking head plus 1-3 B-roll shots, one location
+5-6: Multiple locations OR fast cuts over 1 per second OR music sync required
+7-8: Fast-cut montage, 3+ locations, heavy B-roll, text overlays, beat cuts throughout
+9-10: Advanced effects, color grade, multi-day shoot, choreography, 30+ cuts
+
+filming_needs: list 3-5 specific items the creator needs. Be concrete — not "good lighting" but "ring light or natural window light". Include locations, props, equipment, wardrobe if relevant.`
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -140,7 +175,7 @@ Rules for shot_types:
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1200,
+      max_tokens: 2400,
       messages: [{
         role: 'user',
         content: [
@@ -221,17 +256,31 @@ const server = http.createServer((req, res) => {
         if (contactSheetB64) {
           analysis = await analyseWithClaude(meta, contactSheetB64, transcription)
         } else {
-          // No frames available — safe defaults
+          // No frames available — safe v2 defaults
           analysis = {
+            _v: 2,
             hook_style: 'Could not fully analyse video content — frames unavailable',
-            shot_types: [],
+            shot_types: { _v: 2, shots: [], difficulty_reason: 'Video frames unavailable — re-analyse for full breakdown', filming_needs: [] },
             pacing: 'unknown',
             audio_style: transcription.transcript ? 'voice-driven (from transcript only)' : 'unknown',
             cta: 'none',
             script_notes: transcription.transcript ? transcription.transcript.slice(0, 200) : meta.title,
             edit_brief: 'Re-run analysis when video frames are accessible',
-            effort_rating: 5
+            effort_rating: 5,
+            difficulty_reason: 'Video frames unavailable',
+            filming_needs: []
           }
+        }
+
+        // Build v2 shot_types wrapper.
+        // Claude now returns the full v2 object; shot_types field contains the shots array.
+        // We store the wrapper {_v:2, shots, difficulty_reason, filming_needs} as shot_types.
+        const shotsArray = Array.isArray(analysis.shot_types) ? analysis.shot_types : []
+        const shotTypesV2 = {
+          _v:                2,
+          shots:             shotsArray,
+          difficulty_reason: analysis.difficulty_reason ?? null,
+          filming_needs:     Array.isArray(analysis.filming_needs) ? analysis.filming_needs : [],
         }
 
         res.writeHead(200)
@@ -246,7 +295,14 @@ const server = http.createServer((req, res) => {
             thumbnail:     meta.thumbnail,
             transcript:    transcription.transcript,
             url,
-            ...analysis
+            hook_style:    analysis.hook_style   ?? null,
+            shot_types:    shotTypesV2,
+            pacing:        analysis.pacing        ?? null,
+            audio_style:   analysis.audio_style   ?? null,
+            cta:           analysis.cta           ?? null,
+            script_notes:  analysis.script_notes  ?? null,
+            edit_brief:    analysis.edit_brief    ?? null,
+            effort_rating: analysis.effort_rating ?? null,
           }
         }))
 
