@@ -1,9 +1,10 @@
 {
   "name": "contently-processor",
-  "version": "1.0.0",
-  "description": "",
+  "version": "2.0.0",
+  "description": "Contently video analysis processor — downloads, extracts frames, and analyzes via Claude Vision",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -11,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
     "cors": "^2.8.6",
     "express": "^5.2.1"
   }

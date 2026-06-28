@@ -1,7 +1,136 @@
 const http = require('http')
 const { execSync } = require('child_process')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 
-async function analyseWithClaude(meta) {
+// Decode YouTube cookies from base64 env var into a temp file on startup
+let cookiesPath = null
+if (process.env.YT_COOKIES_B64) {
+  try {
+    cookiesPath = path.join(os.tmpdir(), 'yt-cookies.txt')
+    fs.writeFileSync(cookiesPath, Buffer.from(process.env.YT_COOKIES_B64, 'base64'))
+    console.log('Loaded YouTube cookies from env')
+  } catch (e) {
+    console.error('Failed to write cookies file:', e.message)
+    cookiesPath = null
+  }
+}
+
+const cookieFlag = () => (cookiesPath ? `--cookies "${cookiesPath}"` : '')
+
+// ── helpers ────────────────────────────────────────────────────────────────────
+
+function getMetadata(url) {
+  const raw = execSync(
+    `yt-dlp --dump-json --no-download --no-playlist --js-runtimes deno ${cookieFlag()} "${url}"`,
+    { timeout: 30000 }
+  ).toString()
+  return JSON.parse(raw)
+}
+
+function downloadVideo(url, workDir) {
+  const outPath = path.join(workDir, 'video.mp4')
+  execSync(
+    `yt-dlp -f "best[height<=480]/best" --no-playlist --js-runtimes deno ${cookieFlag()} -o "${outPath}" "${url}"`,
+    { timeout: 120000 }
+  )
+  return outPath
+}
+
+// Scene-aware contact sheet: extracts frames at actual cuts, falls back to uniform sampling
+function makeContactSheet(videoPath, workDir) {
+  const sheetPath = path.join(workDir, 'sheet.jpg')
+
+  // Primary: scene-change detection (threshold 0.25 catches most social-media cuts)
+  // Creates a tiled grid from all detected cut-points
+  try {
+    execSync(
+      `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.25)',scale=320:-1,tile=4x6" -vsync vfr -frames:v 1 "${sheetPath}" -y 2>/dev/null`,
+      { timeout: 60000 }
+    )
+    // >5 KB means real frames were extracted (not just a blank grid)
+    if (fs.existsSync(sheetPath) && fs.statSync(sheetPath).size > 5000) {
+      return sheetPath
+    }
+  } catch {}
+
+  // Fallback: uniform sampling every 2 seconds — catches static/low-cut videos
+  execSync(
+    `ffmpeg -i "${videoPath}" -vf "fps=1/2,scale=320:-1,tile=4x6" -frames:v 1 "${sheetPath}" -y`,
+    { timeout: 60000 }
+  )
+  return sheetPath
+}
+
+function extractAudio(videoPath, workDir) {
+  const audioPath = path.join(workDir, 'audio.mp3')
+  execSync(
+    `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -ar 16000 -ac 1 "${audioPath}" -y`,
+    { timeout: 60000 }
+  )
+  return audioPath
+}
+
+function transcribe(audioPath) {
+  try {
+    const raw = execSync(`python3 transcribe.py "${audioPath}"`, { timeout: 180000 }).toString()
+    return JSON.parse(raw)
+  } catch (e) {
+    console.error('Transcription failed:', e.message)
+    return { transcript: '', segments: [], language: 'unknown' }
+  }
+}
+
+async function analyseWithClaude(meta, contactSheetB64, transcription) {
+  const transcriptText = transcription.transcript || '(no speech detected)'
+  const segmentSummary = (transcription.segments || [])
+    .slice(0, 30)
+    .map(s => `[${s.start}-${s.end}s] ${s.text}`)
+    .join('\n')
+
+  const prompt = `You are analysing a viral short-form video to teach a creator how to recreate it shot-for-shot.
+
+You are given:
+1. A CONTACT SHEET: a grid of frames captured at scene changes (left→right, top→bottom = chronological order). Each cell is one real cut point.
+2. The TRANSCRIPT with timestamps.
+3. Video metadata.
+
+Metadata:
+Title: ${meta.title}
+Duration: ${meta.duration}s
+Views: ${meta.view_count}
+Uploader: ${meta.uploader}
+
+Transcript:
+${transcriptText}
+
+Timestamped segments:
+${segmentSummary || '(none)'}
+
+Return ONLY a valid JSON object — no markdown, no backticks, just the raw JSON:
+
+{
+  "hook_style": "One sentence: what specifically happens in the first 1-3 seconds to grab attention",
+  "shot_types": [
+    "Shot 1: [framing] — [subject/action] — [camera movement/style]",
+    "Shot 2: ...",
+    ...
+  ],
+  "pacing": "One sentence on cut rhythm and energy",
+  "audio_style": "One sentence: voice-driven / music-driven / mix, plus where SFX or beat-cuts occur",
+  "cta": "The closing call-to-action, or 'none'",
+  "script_notes": "Core message and narrative arc in 1-2 sentences",
+  "edit_brief": "Key post-production notes: text overlays, music feel, color grade, transition types",
+  "effort_rating": <integer 1-10>
+}
+
+Rules for shot_types:
+- One entry per DISTINCT CUT — group frames that look like the same continuous shot.
+- Framing: extreme close-up / close-up / medium / wide / overhead / POV.
+- Be specific: name the subject (face, hands, product, environment), note on-screen text, describe camera movement (static / handheld / tracking / zoom).
+- List shots in the EXACT order they appear. This is the creator's shot list to follow.`
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -11,24 +140,27 @@ async function analyseWithClaude(meta) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
+      max_tokens: 1200,
       messages: [{
         role: 'user',
-        content: `Analyse this viral video and return ONLY a JSON object with no markdown or backticks:
-{"hook_style":"one sentence","shot_types":["shot 1","shot 2"],"pacing":"one sentence","cta":"one sentence","script_notes":"one sentence","edit_brief":"one sentence","effort_rating":4}
-
-Title: ${meta.title}
-Duration: ${meta.duration} seconds
-Views: ${meta.view_count}
-Description: ${(meta.description || '').slice(0, 500)}`
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: contactSheetB64 } },
+          { type: 'text', text: prompt }
+        ]
       }]
     })
   })
-  const data = await reconst http = require('http')
-const { execSync } = re.stringify(data))
-  const text = data.content[0].text.replace(/```json|```/g, '').trim()
+
+  const data = await response.json()
+  if (!data.content || !data.content[0]) {
+    console.error('Claude response unexpected:', JSON.stringify(data))
+    throw new Error('Claude returned no content: ' + JSON.stringify(data))
+  }
+  const text = data.content[0].text.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
   return JSON.parse(text)
 }
+
+// ── server ─────────────────────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -48,18 +180,82 @@ const server = http.createServer((req, res) => {
     let body = ''
     req.on('data', chunk => body += chunk)
     req.on('end', async () => {
+      let workDir = null
       try {
         const { url } = JSON.parse(body)
         if (!url) { res.writeHead(400); res.end(JSON.stringify({ error: 'URL required' })); return }
-        const raw = execSync(`yt-dlp --dump-json --no-download "${url}"`, { timeout: 30000 }).toString()
-        const meta = JSON.parse(raw)
-        const analysis = await analyseWithClaude(meta)
+
+        // 1. Metadata (fast, no download)
+        let meta
+        try {
+          meta = getMetadata(url)
+        } catch (ytErr) {
+          res.writeHead(422)
+          res.end(JSON.stringify({
+            error: 'Could not fetch video. The platform may be blocking this server — try a different URL.',
+            detail: ytErr.message
+          }))
+          return
+        }
+        if (!meta || !meta.title) {
+          res.writeHead(422); res.end(JSON.stringify({ error: 'Video metadata missing or empty' })); return
+        }
+
+        workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'contently-'))
+
+        // 2. Download + extract contact sheet + transcribe (best-effort)
+        let contactSheetB64 = null
+        let transcription = { transcript: '', segments: [], language: 'unknown' }
+        try {
+          const videoPath = downloadVideo(url, workDir)
+          const sheetPath = makeContactSheet(videoPath, workDir)
+          contactSheetB64 = fs.readFileSync(sheetPath).toString('base64')
+          const audioPath = extractAudio(videoPath, workDir)
+          transcription = transcribe(audioPath)
+        } catch (mediaErr) {
+          console.error('Media processing failed, falling back to metadata-only:', mediaErr.message)
+        }
+
+        // 3. Analyse with Claude Vision
+        let analysis
+        if (contactSheetB64) {
+          analysis = await analyseWithClaude(meta, contactSheetB64, transcription)
+        } else {
+          // No frames available — safe defaults
+          analysis = {
+            hook_style: 'Could not fully analyse video content — frames unavailable',
+            shot_types: [],
+            pacing: 'unknown',
+            audio_style: transcription.transcript ? 'voice-driven (from transcript only)' : 'unknown',
+            cta: 'none',
+            script_notes: transcription.transcript ? transcription.transcript.slice(0, 200) : meta.title,
+            edit_brief: 'Re-run analysis when video frames are accessible',
+            effort_rating: 5
+          }
+        }
+
         res.writeHead(200)
-        res.end(JSON.stringify({ success: true, data: { title: meta.title, duration: meta.duration, view_count: meta.view_count, like_count: meta.like_count, uploader: meta.uploader, thumbnail: meta.thumbnail, url, ...analysis } }))
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            title:         meta.title,
+            duration:      meta.duration,
+            view_count:    meta.view_count,
+            like_count:    meta.like_count,
+            uploader:      meta.uploader,
+            thumbnail:     meta.thumbnail,
+            transcript:    transcription.transcript,
+            url,
+            ...analysis
+          }
+        }))
+
       } catch (err) {
         console.error('Error:', err.message)
         res.writeHead(500)
         res.end(JSON.stringify({ error: 'Processing failed', detail: err.message }))
+      } finally {
+        if (workDir) try { fs.rmSync(workDir, { recursive: true, force: true }) } catch {}
       }
     })
     return
@@ -70,4 +266,4 @@ const server = http.createServer((req, res) => {
 })
 
 const PORT = process.env.PORT || 3001
-server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`))
+server.listen(PORT, '0.0.0.0', () => console.log(`Contently processor running on port ${PORT}`))
