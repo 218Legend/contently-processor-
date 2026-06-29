@@ -131,8 +131,8 @@ Return ONLY a valid JSON object — no markdown, no backticks, just the raw JSON
       "audio_note": "Music cue / beat drop / SFX / silence note for this shot",
       "energy": 4,
       "tip": "One specific actionable tip to nail this exact shot",
-      "visual_subject": "Literal physical things visible in this frame — concrete nouns only: main subject, key objects, setting/location, notable colors. NO emotions, NO camera terms, NO actions. Example: 'silver laptop on white desk, coffee mug, person in grey hoodie, bright office'",
-      "search_query": "3-6 word literal image-search query built ONLY from the physical nouns in visual_subject. Describe WHAT IS IN FRAME, not how it feels or how it's shot. Example: 'silver laptop desk coffee office'"
+      "visual_subject": "Identify the SINGLE most important visual element that defines this shot — the focal point a viewer's eye goes to first. Then note 1-2 supporting context elements only if they matter. Lead with the hero element. Example: if a hand holds a coffee cup in a room, the hero is 'hand holding coffee cup' and the room is minor context. Don't inventory the whole frame — find what MAKES the shot.",
+      "search_query": "3-5 word literal image-search query centered on the HERO visual element from visual_subject. Lead with the most important physical thing. Drop minor details (clothing colors, background) unless they ARE the point. The query should retrieve a photo where the hero element is the clear subject. Example: 'hand holding coffee cup' NOT 'person grey shirt room window coffee morning'.'"
     }
   ]
 }
@@ -153,12 +153,15 @@ Rules for shot_types array:
 - text_overlay: quote any visible captions or stickers exactly as shown, else 'none'
 - energy: 1 (calm/slow) to 5 (high energy/fast)
 - tip: be specific to THIS shot — not generic advice
-- visual_subject: list the concrete visible elements — main subject, key objects, setting, notable colors. Factual, like a police description of the frame. NO emotions, NO camera jargon, NO abstract concepts.
-- search_query: MUST describe only literal, physical, visible things. Built ONLY from the nouns in visual_subject.
-  BANNED from search_query: all emotion/feeling words (thinking, satisfied, confident, excited, indecisive, happy, genuine, warm, etc.), all camera/cinematography jargon (close-up, medium, wide, POV, shot, angle, framing), and all abstract concepts.
-  GOOD: "popcorn paper container toppings hands market stall" / "silver laptop desk coffee office" / "woman pink apron food booth counter"
-  BAD: "person thinking indecisive smile" / "confident vendor sharing favorite" / "satisfied customer delighted"
-  The query must be something you'd type to find a STOCK PHOTO of the literal scene. If the shot shows a laptop, the query MUST contain "laptop". If it shows hands adding toppings, write "hands toppings" — NOT "product preparation care".
+- visual_subject: identify the ONE hero visual element that defines the shot — the thing a viewer's eye goes to first. Add 1-2 supporting context elements only if they meaningfully change what photo you'd search for. Don't inventory the frame.
+- search_query: 3-5 words centered on the hero element from visual_subject. Lead with the most important physical thing.
+  PRIORITIZE: every shot has one hero (the product, the face, the hands doing the action, the object). Lead the query with it.
+  Don't over-describe: 3-5 words max. Too many nouns returns generic/wrong images.
+  BANNED: emotion words (thinking, deciding, satisfied, excited, etc.), camera jargon (close-up, medium, angle), abstract verbs (looking, considering). If the action is "deciding", describe the VISIBLE thing instead (e.g. "woman at food counter").
+  For talking-head shots: lead with the concrete person + setting ("woman at market booth"), not emotions or micro-expressions.
+  GOOD: "popcorn container toppings hands" / "silver laptop desk" / "woman pink apron food booth"
+  BAD: "woman customer pink shirt necklace deciding order" / "person thinking looking up conversation"
+  The query should retrieve a STOCK PHOTO where the hero element is the clear, unambiguous subject.
 - List shots in EXACT chronological order
 - Maximum 12 shots total — group similar consecutive frames into one shot if needed
 
