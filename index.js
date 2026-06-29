@@ -131,7 +131,8 @@ Return ONLY a valid JSON object — no markdown, no backticks, just the raw JSON
       "audio_note": "Music cue / beat drop / SFX / silence note for this shot",
       "energy": 4,
       "tip": "One specific actionable tip to nail this exact shot",
-      "mood_query": "pinterest search query for visual reference 5-8 words"
+      "visual_subject": "Literal physical things visible in this frame — concrete nouns only: main subject, key objects, setting/location, notable colors. NO emotions, NO camera terms, NO actions. Example: 'silver laptop on white desk, coffee mug, person in grey hoodie, bright office'",
+      "search_query": "3-6 word literal image-search query built ONLY from the physical nouns in visual_subject. Describe WHAT IS IN FRAME, not how it feels or how it's shot. Example: 'silver laptop desk coffee office'"
     }
   ]
 }
@@ -152,7 +153,12 @@ Rules for shot_types array:
 - text_overlay: quote any visible captions or stickers exactly as shown, else 'none'
 - energy: 1 (calm/slow) to 5 (high energy/fast)
 - tip: be specific to THIS shot — not generic advice
-- mood_query: concise Pinterest search for mood/visual reference — e.g. "close up woman mirror selfie fitting room outfit"
+- visual_subject: list the concrete visible elements — main subject, key objects, setting, notable colors. Factual, like a police description of the frame. NO emotions, NO camera jargon, NO abstract concepts.
+- search_query: MUST describe only literal, physical, visible things. Built ONLY from the nouns in visual_subject.
+  BANNED from search_query: all emotion/feeling words (thinking, satisfied, confident, excited, indecisive, happy, genuine, warm, etc.), all camera/cinematography jargon (close-up, medium, wide, POV, shot, angle, framing), and all abstract concepts.
+  GOOD: "popcorn paper container toppings hands market stall" / "silver laptop desk coffee office" / "woman pink apron food booth counter"
+  BAD: "person thinking indecisive smile" / "confident vendor sharing favorite" / "satisfied customer delighted"
+  The query must be something you'd type to find a STOCK PHOTO of the literal scene. If the shot shows a laptop, the query MUST contain "laptop". If it shows hands adding toppings, write "hands toppings" — NOT "product preparation care".
 - List shots in EXACT chronological order
 - Maximum 12 shots total — group similar consecutive frames into one shot if needed
 
