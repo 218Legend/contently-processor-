@@ -42,10 +42,10 @@ function downloadVideo(url, workDir) {
 function makeContactSheet(videoPath, workDir) {
   const sheetPath = path.join(workDir, 'sheet.jpg')
 
-  // Primary: scene-change detection — cap at 3x5=15 frames to keep response within token limits
+  // Primary: scene-change detection — cap at 4x5=20 frames; threshold 0.25 catches subtler cuts
   try {
     execSync(
-      `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.3)',scale=280:-1,tile=3x5" -vsync vfr -frames:v 1 "${sheetPath}" -y 2>/dev/null`,
+      `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.25)',scale=280:-1,tile=4x5" -vsync vfr -frames:v 1 "${sheetPath}" -y 2>/dev/null`,
       { timeout: 60000 }
     )
     if (fs.existsSync(sheetPath) && fs.statSync(sheetPath).size > 5000) {
@@ -53,9 +53,9 @@ function makeContactSheet(videoPath, workDir) {
     }
   } catch {}
 
-  // Fallback: uniform sampling every 5 seconds — capped at 15 frames
+  // Fallback: uniform sampling every 4 seconds — capped at 20 frames (4x5 grid)
   execSync(
-    `ffmpeg -i "${videoPath}" -vf "fps=1/5,scale=280:-1,tile=3x5" -frames:v 1 "${sheetPath}" -y`,
+    `ffmpeg -i "${videoPath}" -vf "fps=1/4,scale=280:-1,tile=4x5" -frames:v 1 "${sheetPath}" -y`,
     { timeout: 60000 }
   )
   return sheetPath
@@ -132,7 +132,9 @@ Return ONLY a valid JSON object — no markdown, no backticks, just the raw JSON
       "energy": 4,
       "tip": "One specific actionable tip to nail this exact shot",
       "visual_subject": "Identify the SINGLE most important visual element that defines this shot — the focal point a viewer's eye goes to first. Then note 1-2 supporting context elements only if they matter. Lead with the hero element. Example: if a hand holds a coffee cup in a room, the hero is 'hand holding coffee cup' and the room is minor context. Don't inventory the whole frame — find what MAKES the shot.",
-      "search_query": "3-5 word literal image-search query centered on the HERO visual element from visual_subject. Lead with the most important physical thing. Drop minor details (clothing colors, background) unless they ARE the point. The query should retrieve a photo where the hero element is the clear subject. Example: 'hand holding coffee cup' NOT 'person grey shirt room window coffee morning'.'"
+      "search_query": "3-5 word literal image-search query centered on the HERO visual element from visual_subject. Lead with the most important physical thing. Drop minor details (clothing colors, background) unless they ARE the point. The query should retrieve a photo where the hero element is the clear subject. Example: 'hand holding coffee cup' NOT 'person grey shirt room window coffee morning'.",
+      "action_query": "3-5 word literal Pinterest image query for the physical ACTION or pose happening in this shot. Hero element = what the person/hands are DOING. Example: 'hands adding toppings popcorn', 'woman walking toward camera street', 'person holding product up'. Same banned-words rules: no emotion words, no camera jargon. If the shot has no meaningful action (static product, text card), mirror the hero object or scene instead.",
+      "scene_query": "3-5 word literal Pinterest image query for the SETTING or environment of this shot. Hero element = the place. Example: 'outdoor farmers market booth', 'modern kitchen counter morning', 'city street sidewalk daytime'. Same banned-words rules: no emotion words, no camera jargon."
     }
   ]
 }
@@ -162,8 +164,11 @@ Rules for shot_types array:
   GOOD: "popcorn container toppings hands" / "silver laptop desk" / "woman pink apron food booth"
   BAD: "woman customer pink shirt necklace deciding order" / "person thinking looking up conversation"
   The query should retrieve a STOCK PHOTO where the hero element is the clear, unambiguous subject.
+- action_query: 3-5 words for the physical ACTION or pose — what the person/hands are DOING. Banned: emotion words, camera jargon. If no meaningful action (static product, text card), use the hero object or scene instead.
+- scene_query: 3-5 words for the SETTING or environment — the place. Banned: emotion words, camera jargon. Example: "outdoor farmers market booth", "modern kitchen counter morning".
+- Do NOT generate a framing query — cinematography terms return junk images and framing is handled separately in the UI.
 - List shots in EXACT chronological order
-- Maximum 12 shots total — group similar consecutive frames into one shot if needed
+- Maximum 16 shots total — group similar consecutive frames into one shot if needed
 
 Difficulty scale for effort_rating (be honest — overrating is better than underrating):
 1-2: Single talking head, one location, under 30s, no effects
