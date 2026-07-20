@@ -38,6 +38,21 @@ function downloadVideo(url, workDir) {
   return outPath
 }
 
+// Direct-media path: fetch an mp4 straight from a CDN url (e.g. Instagram reels
+// resolved via the Apify Instagram scraper, since yt-dlp can't page-fetch IG
+// without a login cookie). curl is in the image (see Dockerfile).
+function downloadDirect(mediaUrl, workDir) {
+  const outPath = path.join(workDir, 'video.mp4')
+  execSync(
+    `curl -sL --max-time 120 -o "${outPath}" "${mediaUrl}"`,
+    { timeout: 130000 }
+  )
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 10000) {
+    throw new Error('Direct media download failed or returned an empty file')
+  }
+  return outPath
+}
+
 // Scene-aware contact sheet: extracts frames at actual cuts, falls back to uniform sampling
 function makeContactSheet(videoPath, workDir) {
   const sheetPath = path.join(workDir, 'sheet.jpg')
@@ -238,23 +253,36 @@ const server = http.createServer((req, res) => {
     req.on('end', async () => {
       let workDir = null
       try {
-        const { url } = JSON.parse(body)
-        if (!url) { res.writeHead(400); res.end(JSON.stringify({ error: 'URL required' })); return }
+        const { url, videoUrl, meta: metaIn } = JSON.parse(body)
+        if (!url && !videoUrl) { res.writeHead(400); res.end(JSON.stringify({ error: 'URL or videoUrl required' })); return }
 
-        // 1. Metadata (fast, no download)
+        // 1. Metadata. Direct-media path (Instagram via Apify): the caller supplies
+        //    metadata + a direct CDN url, since yt-dlp can't page-fetch Instagram.
+        //    Otherwise resolve metadata with yt-dlp from the page url (TikTok/YT).
         let meta
-        try {
-          meta = getMetadata(url)
-        } catch (ytErr) {
-          res.writeHead(422)
-          res.end(JSON.stringify({
-            error: 'Could not fetch video. The platform may be blocking this server — try a different URL.',
-            detail: ytErr.message
-          }))
-          return
-        }
-        if (!meta || !meta.title) {
-          res.writeHead(422); res.end(JSON.stringify({ error: 'Video metadata missing or empty' })); return
+        if (videoUrl) {
+          meta = {
+            title:      (metaIn && metaIn.title) || 'Untitled',
+            duration:   metaIn && metaIn.duration,
+            view_count: metaIn && metaIn.view_count,
+            like_count: metaIn && metaIn.like_count,
+            uploader:   (metaIn && metaIn.uploader) || '',
+            thumbnail:  (metaIn && metaIn.thumbnail) || null,
+          }
+        } else {
+          try {
+            meta = getMetadata(url)
+          } catch (ytErr) {
+            res.writeHead(422)
+            res.end(JSON.stringify({
+              error: 'Could not fetch video. The platform may be blocking this server — try a different URL.',
+              detail: ytErr.message
+            }))
+            return
+          }
+          if (!meta || !meta.title) {
+            res.writeHead(422); res.end(JSON.stringify({ error: 'Video metadata missing or empty' })); return
+          }
         }
 
         workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'contently-'))
@@ -263,7 +291,7 @@ const server = http.createServer((req, res) => {
         let contactSheetB64 = null
         let transcription = { transcript: '', segments: [], language: 'unknown' }
         try {
-          const videoPath = downloadVideo(url, workDir)
+          const videoPath = videoUrl ? downloadDirect(videoUrl, workDir) : downloadVideo(url, workDir)
           const sheetPath = makeContactSheet(videoPath, workDir)
           contactSheetB64 = fs.readFileSync(sheetPath).toString('base64')
           const audioPath = extractAudio(videoPath, workDir)
