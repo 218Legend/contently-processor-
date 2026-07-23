@@ -38,6 +38,62 @@ function downloadVideo(url, workDir) {
   return outPath
 }
 
+// ── YouTube long-form LEARNER (batch 11, Part B) ────────────────────────────────
+// The autonomous "brain" learns from long creator masterclasses/interviews. Both
+// operations are captions/metadata only — NO video download, NO Whisper. The
+// android player_client + deno JS runtime + cookies get past YouTube's 2024-25
+// SABR/poToken gating that broke the naive caption endpoint.
+
+// Search YouTube for LONG-FORM candidates. Flat-playlist = fast (one search page,
+// no per-video extraction); filter to >= minDuration seconds in JS.
+function ytSearchLong(query, count, minDuration) {
+  const q = String(query).replace(/["`$\\]/g, ' ').slice(0, 120)
+  const raw = execSync(
+    `yt-dlp "ytsearch${count}:${q}" --flat-playlist --dump-json --no-warnings ` +
+    `--extractor-args "youtube:player_client=android" --js-runtimes deno ${cookieFlag()}`,
+    { timeout: 60000, maxBuffer: 32 * 1024 * 1024 }
+  ).toString()
+  const out = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const e = JSON.parse(line)
+      const dur = Number(e.duration) || 0
+      if (!e.id || dur < minDuration) continue
+      out.push({
+        id: e.id,
+        url: `https://www.youtube.com/watch?v=${e.id}`,
+        title: e.title || '',
+        channel: e.channel || e.uploader || '',
+        durationSec: dur,
+      })
+    } catch {}
+  }
+  return out
+}
+
+// Fetch the FULL transcript from YouTube auto/manual captions — no download.
+function ytTranscript(url) {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yt-cap-'))
+  try {
+    execSync(
+      `yt-dlp --skip-download --write-auto-subs --write-subs --sub-langs "en.*" --sub-format json3 ` +
+      `--extractor-args "youtube:player_client=android" --js-runtimes deno ${cookieFlag()} ` +
+      `-o "${path.join(workDir, 'cap.%(ext)s')}" "${url}"`,
+      { timeout: 90000 }
+    )
+    const file = fs.readdirSync(workDir).find(f => f.endsWith('.json3'))
+    if (!file) return { transcript: '' }
+    const d = JSON.parse(fs.readFileSync(path.join(workDir, file), 'utf8'))
+    const transcript = (d.events || [])
+      .flatMap(e => (e.segs || []).map(s => s.utf8 || ''))
+      .join('').replace(/\s+/g, ' ').trim()
+    return { transcript }
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 // Direct-media path: fetch an mp4 straight from a CDN url (e.g. Instagram reels
 // resolved via the Apify Instagram scraper, since yt-dlp can't page-fetch IG
 // without a login cookie). curl is in the image (see Dockerfile).
@@ -361,6 +417,48 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: 'Processing failed', detail: err.message }))
       } finally {
         if (workDir) try { fs.rmSync(workDir, { recursive: true, force: true }) } catch {}
+      }
+    })
+    return
+  }
+
+  // YouTube learner: find long-form candidates for a search query.
+  // POST { query, count?, minDuration? } → { success, candidates:[{id,url,title,channel,durationSec}] }
+  if (req.url === '/yt-search' && req.method === 'POST') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { query, count, minDuration } = JSON.parse(body || '{}')
+        if (!query || typeof query !== 'string') { res.writeHead(400); res.end(JSON.stringify({ error: 'query required' })); return }
+        const candidates = ytSearchLong(query, Math.min(Number(count) || 15, 25), Number(minDuration) || 2400)
+        res.writeHead(200)
+        res.end(JSON.stringify({ success: true, candidates }))
+      } catch (err) {
+        console.error('yt-search error:', err.message)
+        res.writeHead(200)
+        res.end(JSON.stringify({ success: false, error: 'yt_search_failed', detail: err.message, candidates: [] }))
+      }
+    })
+    return
+  }
+
+  // YouTube learner: fetch a video's full transcript (captions only, no download).
+  // POST { url } → { success, transcript, chars }
+  if (req.url === '/yt-transcript' && req.method === 'POST') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { url } = JSON.parse(body || '{}')
+        if (!url || typeof url !== 'string') { res.writeHead(400); res.end(JSON.stringify({ error: 'url required' })); return }
+        const { transcript } = ytTranscript(url)
+        res.writeHead(200)
+        res.end(JSON.stringify({ success: !!transcript, transcript: transcript || '', chars: (transcript || '').length }))
+      } catch (err) {
+        console.error('yt-transcript error:', err.message)
+        res.writeHead(200)
+        res.end(JSON.stringify({ success: false, error: 'yt_transcript_failed', detail: err.message, transcript: '', chars: 0 }))
       }
     })
     return
