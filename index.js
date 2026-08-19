@@ -303,6 +303,41 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // ── /diag — FREE DIAGNOSTIC, no download, no Apify, no Anthropic ────────────
+  // ⚠️ THIS EXISTS BECAUSE "Could not fetch video. The platform may be blocking
+  // this server" is a CONCLUSION, not evidence. That message survived weeks of
+  // being read as "TikTok blocks datacenter IPs" while the real cause was a
+  // missing pip extra (curl_cffi, fixed in c28e9cf). The raw error was always in
+  // `detail`; what was missing was everything AROUND it — what TikTok actually
+  // returns to this machine, and from which IP.
+  // Returns: yt-dlp's full verbose stderr, the HTTP status + first bytes TikTok
+  // serves this server, and the egress IP. Nothing here costs money.
+  if (req.url === '/diag' && req.method === 'POST') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      const out = {}
+      let url = ''
+      try { url = String(JSON.parse(body || '{}').url || '') } catch {}
+      if (!url) { res.writeHead(400); res.end(JSON.stringify({ error: 'url required' })); return }
+      const run = (cmd, ms) => {
+        try { return { ok: true, out: execSync(cmd, { timeout: ms, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).toString().slice(0, 4000) } }
+        catch (e) { return { ok: false, out: String(e.stdout || '').slice(0, 2000), err: String(e.stderr || e.message || '').slice(0, 6000) } }
+      }
+      out.egressIp   = run('curl -s -m 12 https://ifconfig.me', 15000)
+      out.ytdlpVer   = run('yt-dlp --version', 15000)
+      out.impersonate= run('yt-dlp --list-impersonate-targets 2>&1 | head -20', 20000)
+      // what does TikTok actually SERVE this machine? status + a slice of the body.
+      out.plainCurl  = run(`curl -s -m 20 -o /tmp/tt.html -w '%{http_code} %{size_download}' -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' "${url.replace(/"/g, '')}"`, 25000)
+      out.bodyHead   = run("head -c 700 /tmp/tt.html | tr -d '\\n'", 8000)
+      out.bodySignals= run("grep -o -i -m1 -E 'captcha|verify|robot|access denied|blocked|__UNIVERSAL_DATA|SIGI_STATE|login' /tmp/tt.html | head -5", 8000)
+      out.ytdlpVerbose = run(`yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes deno ${cookieFlag()} "${url.replace(/"/g, '')}" 2>&1 | tail -40`, 90000)
+      res.writeHead(200)
+      res.end(JSON.stringify(out, null, 1))
+    })
+    return
+  }
+
   if (req.url === '/process' && req.method === 'POST') {
     let body = ''
     req.on('data', chunk => body += chunk)
