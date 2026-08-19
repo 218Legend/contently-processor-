@@ -24,8 +24,12 @@ RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib
 # webpage request". Measured from the server itself: TikTok returns a full
 # HTTP 200 page of 394KB with no captcha and no block, so the IP was never the
 # problem — a flag was being passed for a binary that did not exist.
-RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- --yes \
-  && deno --version
+# ⚠️ NON-FATAL ON PURPOSE. An install that hard-fails takes the whole image
+# build with it, Railway keeps serving the previous one, and the symptom is
+# indistinguishable from "the fix did not work" — which is exactly what happened
+# on the first attempt. node is the guaranteed fallback (see index.js).
+RUN (curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y || true) \
+  && (deno --version || echo 'deno unavailable — falling back to node as the JS runtime')
 
 RUN apt-get update && apt-get install -y \
   python3 python3-pip ffmpeg curl \
