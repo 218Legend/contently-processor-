@@ -13,7 +13,10 @@ FROM node:18-slim
 # TikTok changes its page shape underneath it.
 
 # curl first — node:18-slim does not ship it, and the deno installer needs it.
-RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
+# ⚠️ unzip IS REQUIRED. The deno install script ships a .zip and exits with
+#   "Error: either unzip or 7z is required to install Deno"
+# if neither is present. That is the trivial reason the first deno layer failed.
+RUN apt-get update && apt-get install -y curl ca-certificates unzip && rm -rf /var/lib/apt/lists/*
 
 # ⚠️ DENO IS NOT OPTIONAL EITHER, AND ITS ABSENCE WAS SILENT.
 # Five yt-dlp call sites pass `--js-runtimes deno`, and deno was never installed
@@ -27,7 +30,13 @@ RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib
 # ⚠️ NON-FATAL ON PURPOSE. An install that hard-fails takes the whole image
 # build with it, Railway keeps serving the previous one, and the symptom is
 # indistinguishable from "the fix did not work" — which is exactly what happened
-# on the first attempt. node is the guaranteed fallback (see index.js).
+# on the first attempt.
+# ⚠️ AND NODE IS *NOT* A FALLBACK ON THIS BASE IMAGE. yt-dlp's NodeJsRuntime sets
+# MIN_SUPPORTED_VERSION = (22, 0, 0); this is node:18-slim, so node is detected
+# and then reported as "node 18.x (unsupported)". deno is the only runtime this
+# image can actually run. Bumping the base image to node:22-slim would make the
+# `--js-runtimes node` fallback real — deliberately not done here, since that
+# changes the app runtime too.
 RUN (curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y || true) \
   && (deno --version || echo 'deno unavailable — falling back to node as the JS runtime')
 

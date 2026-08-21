@@ -19,11 +19,21 @@ if (process.env.YT_COOKIES_B64) {
 
 const cookieFlag = () => (cookiesPath ? `--cookies "${cookiesPath}"` : '')
 
+// ⚠️ `--js-runtimes` TAKES ONE RUNTIME AND MUST BE REPEATED — it is NOT a
+// comma-separated list. yt-dlp defines it with `callback_kwargs={'delim': None}`,
+// so `--js-runtimes node,deno` is parsed as a single runtime literally named
+// "node,deno" and produces:
+//   WARNING: Ignoring unsupported JavaScript runtime(s): node,deno.
+//            Supported runtimes: deno, node, bun, quickjs.
+// followed by `[debug] JS runtimes: none` — i.e. it fails EXACTLY like a missing
+// binary, which is how it survived a round of debugging. Repeat the flag instead.
+// (Note deno is already yt-dlp's default; the flags are explicit on purpose.)
+
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 function getMetadata(url) {
   const raw = execSync(
-    `yt-dlp --dump-json --no-download --no-playlist --js-runtimes node,deno ${cookieFlag()} "${url}"`,
+    `yt-dlp --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag()} "${url}"`,
     { timeout: 30000 }
   ).toString()
   return JSON.parse(raw)
@@ -32,7 +42,7 @@ function getMetadata(url) {
 function downloadVideo(url, workDir) {
   const outPath = path.join(workDir, 'video.mp4')
   execSync(
-    `yt-dlp -f "best[height<=480]/best" --no-playlist --js-runtimes node,deno ${cookieFlag()} -o "${outPath}" "${url}"`,
+    `yt-dlp -f "best[height<=480]/best" --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag()} -o "${outPath}" "${url}"`,
     { timeout: 120000 }
   )
   return outPath
@@ -50,7 +60,7 @@ function ytSearchLong(query, count, minDuration) {
   const q = String(query).replace(/["`$\\]/g, ' ').slice(0, 120)
   const raw = execSync(
     `yt-dlp "ytsearch${count}:${q}" --flat-playlist --dump-json --no-warnings ` +
-    `--extractor-args "youtube:player_client=android" --js-runtimes node,deno ${cookieFlag()}`,
+    `--extractor-args "youtube:player_client=android" --js-runtimes deno --js-runtimes node ${cookieFlag()}`,
     { timeout: 60000, maxBuffer: 32 * 1024 * 1024 }
   ).toString()
   const out = []
@@ -78,7 +88,7 @@ function ytTranscript(url) {
   try {
     execSync(
       `yt-dlp --skip-download --write-auto-subs --write-subs --sub-langs "en.*" --sub-format json3 ` +
-      `--extractor-args "youtube:player_client=android" --js-runtimes node,deno ${cookieFlag()} ` +
+      `--extractor-args "youtube:player_client=android" --js-runtimes deno --js-runtimes node ${cookieFlag()} ` +
       `-o "${path.join(workDir, 'cap.%(ext)s')}" "${url}"`,
       { timeout: 90000 }
     )
@@ -331,7 +341,7 @@ const server = http.createServer((req, res) => {
       out.plainCurl  = run(`curl -s -m 20 -o /tmp/tt.html -w '%{http_code} %{size_download}' -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' "${url.replace(/"/g, '')}"`, 25000)
       out.bodyHead   = run("head -c 700 /tmp/tt.html | tr -d '\\n'", 8000)
       out.bodySignals= run("grep -o -i -m1 -E 'captcha|verify|robot|access denied|blocked|__UNIVERSAL_DATA|SIGI_STATE|login' /tmp/tt.html | head -5", 8000)
-      out.ytdlpVerbose = run(`yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes node,deno ${cookieFlag()} "${url.replace(/"/g, '')}" 2>&1 | tail -40`, 90000)
+      out.ytdlpVerbose = run(`yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag()} "${url.replace(/"/g, '')}" 2>&1 | tail -40`, 90000)
       res.writeHead(200)
       res.end(JSON.stringify(out, null, 1))
     })
