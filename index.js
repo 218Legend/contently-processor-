@@ -109,12 +109,27 @@ function ytTranscript(url) {
 // without a login cookie). curl is in the image (see Dockerfile).
 function downloadDirect(mediaUrl, workDir) {
   const outPath = path.join(workDir, 'video.mp4')
-  execSync(
-    `curl -sL --max-time 120 -o "${outPath}" "${mediaUrl}"`,
-    { timeout: 130000 }
-  )
+  // ⚠️ `-f` IS NOT OPTIONAL. Without it curl EXITS 0 ON AN HTTP 403 and writes
+  // the error body into the output file, so an expired/blocked CDN url produced
+  // a tiny "video" and the generic "returned an empty file" — hiding the status
+  // that would have said which of the two it was. `-w` gives us the code even on
+  // success, so the message can name it.
+  // (Measured 2026-08-22: a FRESH Instagram CDN url downloads fine with plain
+  // curl — 17.4MB, HTTP 200, no User-Agent and no Referer required. The
+  // signed-url/headers theory is disproved; don't re-add headers for it.)
+  let status = '000'
+  try {
+    status = execSync(
+      `curl -fsSL --max-time 120 -w '%{http_code}' -o "${outPath}" "${mediaUrl}"`,
+      { timeout: 130000 }
+    ).toString().trim()
+  } catch (e) {
+    const code = (e.stdout || '').toString().trim() || 'no response'
+    throw new Error(`Direct media download failed (HTTP ${code})`)
+  }
   if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 10000) {
-    throw new Error('Direct media download failed or returned an empty file')
+    const size = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0
+    throw new Error(`Direct media download returned ${size} bytes (HTTP ${status}) — too small to be a video`)
   }
   return outPath
 }
@@ -390,6 +405,7 @@ const server = http.createServer((req, res) => {
 
         // 2. Download + extract contact sheet + transcribe (best-effort)
         let contactSheetB64 = null
+        let degradedReason = null
         let transcription = { transcript: '', segments: [], language: 'unknown' }
         try {
           const videoPath = videoUrl ? downloadDirect(videoUrl, workDir) : downloadVideo(url, workDir)
@@ -398,6 +414,14 @@ const server = http.createServer((req, res) => {
           const audioPath = extractAudio(videoPath, workDir)
           transcription = transcribe(audioPath)
         } catch (mediaErr) {
+          // ⚠️ A FAILED DOWNLOAD USED TO RETURN A CLEAN `success: true` WITH AN
+          // EMPTY SHOT LIST. That writes a benchmark which LOOKS analysed —
+          // the "analysis not captured" stub class that Settings' Re-analyze
+          // exists to clean up, except nothing marked it. Still non-fatal
+          // (metadata-only beats nothing), but it is now DECLARED, so the caller
+          // can tell a real analysis from a hollow one without guessing from
+          // refusal text.
+          degradedReason = mediaErr.message
           console.error('Media processing failed, falling back to metadata-only:', mediaErr.message)
         }
 
@@ -436,6 +460,9 @@ const server = http.createServer((req, res) => {
         res.writeHead(200)
         res.end(JSON.stringify({
           success: true,
+          // ⚠️ TRUE WHEN THE VIDEO ITSELF WAS NEVER SEEN. The payload is still
+          // usable metadata, but nothing here came from watching the video.
+          ...(degradedReason ? { degraded: true, degraded_reason: degradedReason } : {}),
           data: {
             title:         meta.title,
             duration:      meta.duration,
@@ -458,8 +485,23 @@ const server = http.createServer((req, res) => {
 
       } catch (err) {
         console.error('Error:', err.message)
-        res.writeHead(500)
-        res.end(JSON.stringify({ error: 'Processing failed', detail: err.message }))
+        // ⚠️ AN INVALID KEY IS A CONFIGURATION FAULT, NOT A BAD VIDEO, AND MUST
+        // NOT READ AS ONE. On 2026-08-22 the processor's ANTHROPIC_API_KEY went
+        // stale (the app's own key was fine — Railway holds a SEPARATE copy) and
+        // every analysis on BOTH platforms died with a flat "Processing failed".
+        // It was reported as "Instagram analysis is failing" and cost a full
+        // investigation, because the message named neither the cause nor the
+        // fact that it applied to everything.
+        const m = String(err.message || '')
+        const isAuth = /authentication_error|API key is invalid|invalid_api_key|401|permission_error/i.test(m)
+        res.writeHead(isAuth ? 503 : 500)
+        res.end(JSON.stringify({
+          error: isAuth
+            ? 'The analyser is not configured on the server (its API key was rejected) — this affects every video, not just this one.'
+            : 'Processing failed',
+          detail: m,
+          ...(isAuth ? { cause: 'processor_api_key' } : {}),
+        }))
       } finally {
         if (workDir) try { fs.rmSync(workDir, { recursive: true, force: true }) } catch {}
       }
