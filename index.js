@@ -17,7 +17,18 @@ if (process.env.YT_COOKIES_B64) {
   }
 }
 
-const cookieFlag = () => (cookiesPath ? `--cookies "${cookiesPath}"` : '')
+/**
+ * ⚠️ THE JAR IS `YT_COOKIES_B64` — YOUTUBE COOKIES — AND IT WAS BEING SENT TO
+ * TIKTOK TOO. That put an unrelated, silently-expiring credential on TikTok's
+ * failure surface for no benefit: measured 2026-08-22 with both arms run back to
+ * back on ONE egress IP, TikTok extraction succeeds identically with cookies
+ * (394,271 bytes) and without (393,900 bytes). YouTube is the path that plausibly
+ * needs them (bot checks on the android client), so they now go only there.
+ *
+ * ⚠️ Pass the URL. A bare cookieFlag() call would silently re-broaden this.
+ */
+const isYouTube = (u) => /(^|\.)(youtube\.com|youtu\.be)/i.test(String(u || ''))
+const cookieFlag = (url) => (cookiesPath && isYouTube(url) ? `--cookies "${cookiesPath}"` : '')
 
 // ⚠️ `--js-runtimes` TAKES ONE RUNTIME AND MUST BE REPEATED — it is NOT a
 // comma-separated list. yt-dlp defines it with `callback_kwargs={'delim': None}`,
@@ -33,7 +44,7 @@ const cookieFlag = () => (cookiesPath ? `--cookies "${cookiesPath}"` : '')
 
 function getMetadata(url) {
   const raw = execSync(
-    `yt-dlp --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag()} "${url}"`,
+    `yt-dlp --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag(url)} "${url}"`,
     { timeout: 30000 }
   ).toString()
   return JSON.parse(raw)
@@ -42,7 +53,7 @@ function getMetadata(url) {
 function downloadVideo(url, workDir) {
   const outPath = path.join(workDir, 'video.mp4')
   execSync(
-    `yt-dlp -f "best[height<=480]/best" --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag()} -o "${outPath}" "${url}"`,
+    `yt-dlp -f "best[height<=480]/best" --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag(url)} -o "${outPath}" "${url}"`,
     { timeout: 120000 }
   )
   return outPath
@@ -60,7 +71,7 @@ function ytSearchLong(query, count, minDuration) {
   const q = String(query).replace(/["`$\\]/g, ' ').slice(0, 120)
   const raw = execSync(
     `yt-dlp "ytsearch${count}:${q}" --flat-playlist --dump-json --no-warnings ` +
-    `--extractor-args "youtube:player_client=android" --js-runtimes deno --js-runtimes node ${cookieFlag()}`,
+    `--extractor-args "youtube:player_client=android" --js-runtimes deno --js-runtimes node ${cookieFlag('https://youtube.com')}`,
     { timeout: 60000, maxBuffer: 32 * 1024 * 1024 }
   ).toString()
   const out = []
@@ -88,7 +99,7 @@ function ytTranscript(url) {
   try {
     execSync(
       `yt-dlp --skip-download --write-auto-subs --write-subs --sub-langs "en.*" --sub-format json3 ` +
-      `--extractor-args "youtube:player_client=android" --js-runtimes deno --js-runtimes node ${cookieFlag()} ` +
+      `--extractor-args "youtube:player_client=android" --js-runtimes deno --js-runtimes node ${cookieFlag('https://youtube.com')} ` +
       `-o "${path.join(workDir, 'cap.%(ext)s')}" "${url}"`,
       { timeout: 90000 }
     )
@@ -364,7 +375,7 @@ const server = http.createServer((req, res) => {
       // variable you are testing against a CONSTANT IP, in the same moment.
       const ytCmd = (extra) =>
         `yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${extra} "${url.replace(/"/g, '')}" 2>&1 | tail -40`
-      out.ytdlpVerbose   = run(ytCmd(cookieFlag()), 90000)
+      out.ytdlpVerbose   = run(ytCmd(cookieFlag(url)), 90000)
       out.ytdlpNoCookies = run(ytCmd(''), 90000)
       // The size yt-dlp's own (impersonated) request receives is the tell: the
       // real watch page is ~395KB, a challenge stub is ~13KB. Compare against
@@ -375,7 +386,7 @@ const server = http.createServer((req, res) => {
       out.summary = {
         withCookies:    { webpageBytes: sizeOf(out.ytdlpVerbose),   extracted: okOf(out.ytdlpVerbose) },
         withoutCookies: { webpageBytes: sizeOf(out.ytdlpNoCookies), extracted: okOf(out.ytdlpNoCookies) },
-        cookiesPresent: Boolean(cookieFlag()),
+        cookiesPresent: Boolean(cookieFlag(url)), cookieJarLoaded: Boolean(cookiesPath),
       }
       res.writeHead(200)
       res.end(JSON.stringify(out, null, 1))
@@ -409,10 +420,23 @@ const server = http.createServer((req, res) => {
           try {
             meta = getMetadata(url)
           } catch (ytErr) {
+            // ⚠️ "TRY A DIFFERENT URL" IS THE WRONG ADVICE FOR THE FAILURE THIS
+            // ACTUALLY HITS, and it sent two investigations down the wrong path.
+            // Measured 2026-08-22: TikTok answers SOME of this service's egress
+            // IPs with a ~13KB challenge stub instead of the ~395KB watch page —
+            // same yt-dlp, same curl_cffi, same impersonation target, same
+            // cookies, different container. It is per-IP and TRANSIENT, and the
+            // egress IP changes on every deploy, so another URL fails exactly the
+            // same way while a redeploy fixes it. Say that instead.
+            const m = String(ytErr.message || '')
+            const challenged = /Unexpected response from webpage request|_solve_challenge/i.test(m)
             res.writeHead(422)
             res.end(JSON.stringify({
-              error: 'Could not fetch video. The platform may be blocking this server — try a different URL.',
-              detail: ytErr.message
+              error: challenged
+                ? 'The platform is challenging this server right now. It affects every video, not this one — it usually clears on its own; a redeploy moves the server to a new address and clears it immediately.'
+                : 'Could not fetch video. The platform may be blocking this server — try a different URL.',
+              detail: m,
+              ...(challenged ? { cause: 'platform_challenge' } : {}),
             }))
             return
           }
