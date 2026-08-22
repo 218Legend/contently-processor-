@@ -356,7 +356,27 @@ const server = http.createServer((req, res) => {
       out.plainCurl  = run(`curl -s -m 20 -o /tmp/tt.html -w '%{http_code} %{size_download}' -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' "${url.replace(/"/g, '')}"`, 25000)
       out.bodyHead   = run("head -c 700 /tmp/tt.html | tr -d '\\n'", 8000)
       out.bodySignals= run("grep -o -i -m1 -E 'captcha|verify|robot|access denied|blocked|__UNIVERSAL_DATA|SIGI_STATE|login' /tmp/tt.html | head -5", 8000)
-      out.ytdlpVerbose = run(`yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag()} "${url.replace(/"/g, '')}" 2>&1 | tail -40`, 90000)
+      // ⚠️ BOTH ARMS IN ONE CALL, ON PURPOSE. The processor's egress IP CHANGES
+      // ON EVERY DEPLOY (measured 2026-08-22: 13.52.165.77 → 152.55.176.108
+      // across the key redeploy), and TikTok's behaviour tracks the IP — so a
+      // with-cookies run now compared against a without-cookies run after the
+      // next deploy compares two different machines and proves nothing. Run the
+      // variable you are testing against a CONSTANT IP, in the same moment.
+      const ytCmd = (extra) =>
+        `yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${extra} "${url.replace(/"/g, '')}" 2>&1 | tail -40`
+      out.ytdlpVerbose   = run(ytCmd(cookieFlag()), 90000)
+      out.ytdlpNoCookies = run(ytCmd(''), 90000)
+      // The size yt-dlp's own (impersonated) request receives is the tell: the
+      // real watch page is ~395KB, a challenge stub is ~13KB. Compare against
+      // plainCurl above, which is the same host with no cookies and no
+      // impersonation.
+      const sizeOf = (o) => { const m = /Webpage size: (\d+)/.exec(String(o && o.out || '')); return m ? Number(m[1]) : null }
+      const okOf   = (o) => /"id":\s*"\d+"/.test(String(o && o.out || ''))
+      out.summary = {
+        withCookies:    { webpageBytes: sizeOf(out.ytdlpVerbose),   extracted: okOf(out.ytdlpVerbose) },
+        withoutCookies: { webpageBytes: sizeOf(out.ytdlpNoCookies), extracted: okOf(out.ytdlpNoCookies) },
+        cookiesPresent: Boolean(cookieFlag()),
+      }
       res.writeHead(200)
       res.end(JSON.stringify(out, null, 1))
     })
