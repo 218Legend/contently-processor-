@@ -348,6 +348,21 @@ const server = http.createServer((req, res) => {
   // returns to this machine, and from which IP.
   // Returns: yt-dlp's full verbose stderr, the HTTP status + first bytes TikTok
   // serves this server, and the egress IP. Nothing here costs money.
+  // ⚠️ A GET HERE USED TO 404 WITH {"error":"Not found"}, WHICH READS EXACTLY LIKE
+  // A DEPLOY THAT NEVER LANDED — and cost real debugging time on 2026-08-31, when
+  // the endpoint was in fact live and healthy. A diagnostic that lies about its
+  // own existence is worse than no diagnostic.
+  if (req.url === '/diag' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      ok: true,
+      endpoint: '/diag',
+      usage: 'POST /diag with {"url":"<a TikTok watch url>"} — runs yt-dlp verbosely both with and without cookies, a plain curl of the watch page, and reports the egress IP, yt-dlp version and impersonation targets.',
+      note: 'This is a diagnostic, not the analysis path. POST /process is the real one.',
+      example: `curl -X POST -H 'Content-Type: application/json' -d '{"url":"https://www.tiktok.com/@espn/video/7675192516739681567"}' ${req.headers.host ? 'https://' + req.headers.host : ''}/diag`,
+    }))
+    return
+  }
   if (req.url === '/diag' && req.method === 'POST') {
     let body = ''
     req.on('data', c => body += c)
@@ -429,7 +444,15 @@ const server = http.createServer((req, res) => {
             // egress IP changes on every deploy, so another URL fails exactly the
             // same way while a redeploy fixes it. Say that instead.
             const m = String(ytErr.message || '')
-            const challenged = /Unexpected response from webpage request|_solve_challenge/i.test(m)
+            // ⚠️ TIKTOK'S OWN WORDING WAS NOT IN THIS PATTERN, AND THAT IS WHY THE
+            // ADVICE ABOVE STILL REACHED PEOPLE. On 2026-08-31 the live failure
+            // read "[TikTok] Your IP address is blocked from accessing this post"
+            // — which matched none of these, fell through to the generic branch,
+            // and was reported upstream as a hard IP ban. It is not: the same
+            // service, same version, same IP analysed three videos end to end
+            // hours later. TikTok says "blocked" for a transient per-IP challenge,
+            // so treat its blocked/rate-limit wording as the challenge it is.
+            const challenged = /Unexpected response from webpage request|_solve_challenge|IP address is blocked|blocked from accessing|rate.?limit|too many requests|captcha|verify.{0,12}human/i.test(m)
             res.writeHead(422)
             res.end(JSON.stringify({
               error: challenged

@@ -42,8 +42,24 @@ RUN (curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- 
 
 RUN apt-get update && apt-get install -y \
   python3 python3-pip ffmpeg curl \
+  # ⚠️ PINNED EXACTLY, ON PURPOSE. This was `--upgrade "yt-dlp[default,curl-cffi]"`,
+  # which meant EVERY REDEPLOY silently changed the extractor — batch 49 watched
+  # 2026.07.04 → 2026.08.19 arrive on a deploy whose stated purpose was rotating
+  # two API keys. Combined with the egress IP also moving per deploy, a deploy
+  # that changed nothing could change both the software and the network identity
+  # underneath a working system, which makes every failure unbisectable.
+  #
+  # 2026.08.19 is MEASURED GOOD (2026-08-31): it extracts and fully downloads
+  # TikTok from a residential IP, /diag reports extracted:true from Railway, and
+  # three real /process runs returned genuine transcripts with v2 shot lists.
+  # Nightly (2026.08.30.232658) was tested against the same URLs and is no better
+  # — the version was never the variable.
+  #
+  # ⚠️ TO BUMP: change the number here, deploy, and re-run POST /diag plus one
+  # real /process. Never loosen it back to --upgrade; a silent change is what
+  # makes the next outage take a day instead of an hour.
   && pip3 install --break-system-packages --upgrade \
-       "yt-dlp[default,curl-cffi]" requests \
+       "yt-dlp[default,curl-cffi]==2026.8.19" requests \
   && apt-get clean
 
 WORKDIR /app
