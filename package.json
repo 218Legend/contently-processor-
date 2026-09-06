@@ -1,11 +1,11 @@
 {
   "name": "contently-processor",
   "version": "2.0.0",
-  "description": "Contently video analysis processor — downloads, extracts frames, and analyzes via Claude Vision",
+  "description": "Contently video analysis processor \u2014 downloads, extracts frames, and analyzes via Claude Vision",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test-classify.mjs"
   },
   "keywords": [],
   "author": "",

@@ -42,12 +42,123 @@ const cookieFlag = (url) => (cookiesPath && isYouTube(url) ? `--cookies "${cooki
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
+// ── WHY A yt-dlp FAILURE HAPPENED, WHICH DECIDES WHETHER RETRYING CAN HELP ──
+//
+// ⚠️ ONLY ONE OF THESE MAY RETRY. Retrying a dead video, a private post or a
+// missing pip extra burns the caller's entire budget to fail identically — and
+// the caller's budget is small (see BUDGET below). Everything that is not a
+// transient platform challenge fails fast.
+//
+// ⚠️ ORDER IS LOAD-BEARING, AND THIS IS THE SUBTLE ONE. `_solve_challenge` is
+// emitted BOTH by a genuine TikTok challenge AND by yt-dlp having no JavaScript
+// runtime at all — batch 44 spent a full debugging round on exactly that stack
+// trace when the real cause was `--js-runtimes node,deno` being parsed as one
+// runtime literally named "node,deno". So config faults are tested FIRST and win.
+// If deno ever goes missing again, this must read as config and stop, not retry.
+// ⚠️ THE ERROR STRING ALONE CANNOT DECIDE THIS, AND THAT IS THE WHOLE FINDING.
+// Measured 2026-09-06 on ONE container, ONE egress IP (152.55.176.57), seconds
+// apart and repeatedly:
+//   @espn        extracted 2/2, ~394-403 KB page
+//   @khaby.lame  FAILED    4/4, ~367-369 KB page, "Your IP address is blocked"
+// Ten real videos this product had already analysed: 10/10 extracted, 0 blocked.
+// So "IP address is blocked" is emitted for a PER-VIDEO block that is completely
+// reproducible — retrying it can never succeed, and doing so burns the caller's
+// whole budget to fail identically.
+// The transient per-IP challenge is a different animal and it has a different
+// FINGERPRINT: batch 49 measured the challenged case receiving a ~13 KB stub
+// where the healthy one got ~395 KB. A full page plus a blocked message is a
+// verdict about the video. A stub is the platform refusing the connection.
+// SIZE is the discriminator; the words are the same either way.
+const FULL_PAGE_MIN_BYTES = 100000
+function classifyYtdlpError(msg, webpageBytes) {
+  const m = String(msg || '')
+  // a fault in this container. Retrying cannot fix our own image.
+  if (/Ignoring unsupported JavaScript runtime|JS runtimes:\s*none|no impersonate target is available|impersonate target is not available/i.test(m)) return 'config'
+  // a permanent fact about this video. Another attempt returns the same thing.
+  if (/Video unavailable|not available|has been removed|is private|does not exist|content isn.t available|HTTP Error 4(0[0-9]|1[0-9])|deleted|available in your country|age.?restrict|Sign in to confirm/i.test(m)) return 'permanent'
+  // the transient per-IP challenge — the ONLY thing worth another attempt.
+  const looksChallenged = /IP address is blocked|blocked from accessing|_solve_challenge|Unexpected response from webpage|rate.?limit|too many requests|captcha|verify.{0,12}human/i.test(m)
+  if (looksChallenged) {
+    // a FULL page that still says "blocked" is a decision about this video
+    if (typeof webpageBytes === 'number' && webpageBytes >= FULL_PAGE_MIN_BYTES) return 'video_blocked'
+    return 'challenge'
+  }
+  return 'unknown'
+}
+
+// ── HOW LONG MAY WE SPEND, AND HOW HARD MAY WE TRY ──────────────────────────
+//
+// ⚠️ THE BUDGET IS THE CALLER'S, NOT OURS. /process is called client-side from
+// the app and server-side by the cron, and the cron runs under Vercel's
+// maxDuration 120. Analysis itself is 27-70s. A retry budget that outlives the
+// caller's timeout does not rescue anything — it just fails slower and holds a
+// container open while it does. Callers may pass budgetMs; the default leaves
+// the cron real headroom.
+const DEFAULT_BUDGET_MS = 100000
+const MIN_ATTEMPT_MS    = 12000   // no point starting a try we cannot finish
+//
+// ⚠️ THE BACKOFF IS DELIBERATELY SHORT, AND THE MEASUREMENT IS WHY IT IS NOT
+// LONGER. The brief asked whether a challenge clears in seconds or hours, because
+// the answer picks the architecture. Measured 2026-09-06: ten real videos 10/10,
+// @espn 4/4, all on the IP that was reported blocked earlier the same day — so
+// the reported challenge HAD ALREADY CLEARED ON ITS OWN, with no deploy. That
+// bounds it at under a few hours and gives exactly ONE transition, which is not
+// enough to justify a long in-request backoff. It IS enough to justify cheap
+// insurance against a momentary blip. Two short attempts, ~8s of added wall
+// clock at worst.
+// If a future measurement shows challenges lasting minutes, this array is the
+// only thing that changes — and if it shows hours, the honest answer is a queue,
+// not a bigger array here.
+const CHALLENGE_BACKOFF_MS = [2000, 6000]
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+/**
+ * Runs `fn`, retrying ONLY a transient platform challenge and only while the
+ * caller's deadline leaves room for another attempt.
+ * ⚠️ Everything that is not `challenge` rethrows immediately — a dead video, a
+ * private post, a per-video block or a broken image must fail fast.
+ */
+async function withChallengeRetry(fn, { deadlineAt, onRetry }) {
+  let attempt = 0
+  for (;;) {
+    try { return fn() }
+    catch (e) {
+      const kind = classifyYtdlpError(e.message, e.webpageBytes)
+      e.kind = kind
+      if (kind !== 'challenge') throw e
+      const wait = CHALLENGE_BACKOFF_MS[attempt]
+      const left = deadlineAt - Date.now()
+      if (wait === undefined || left < wait + MIN_ATTEMPT_MS) {
+        e.exhausted = true
+        e.attempts = attempt + 1
+        throw e
+      }
+      attempt++
+      if (onRetry) onRetry({ attempt, waitMs: wait, msLeft: left })
+      await sleep(wait)
+    }
+  }
+}
+
+// ⚠️ `-v` IS LOAD-BEARING, NOT NOISE. It is the only way to learn HOW BIG a page
+// TikTok actually served, and that number is the difference between a failure
+// worth retrying and one that never will be (see classifyYtdlpError). Verbose
+// output goes to stderr, so stdout stays pure JSON.
 function getMetadata(url) {
-  const raw = execSync(
-    `yt-dlp --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag(url)} "${url}"`,
-    { timeout: 30000 }
-  ).toString()
-  return JSON.parse(raw)
+  try {
+    const raw = execSync(
+      `yt-dlp -v --dump-json --no-download --no-playlist --js-runtimes deno --js-runtimes node ${cookieFlag(url)} "${url}"`,
+      { timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] }
+    ).toString()
+    return JSON.parse(raw)
+  } catch (e) {
+    const log = String(e.stderr || '') + String(e.stdout || '') + String(e.message || '')
+    const err = new Error((log.match(/ERROR:.*/) || [e.message])[0])
+    err.ytLog = log
+    err.webpageBytes = (() => { const m = /Webpage size:\s*(\d+)/.exec(log); return m ? Number(m[1]) : null })()
+    throw err
+  }
 }
 
 function downloadVideo(url, workDir) {
@@ -415,7 +526,11 @@ const server = http.createServer((req, res) => {
     req.on('end', async () => {
       let workDir = null
       try {
-        const { url, videoUrl, meta: metaIn } = JSON.parse(body)
+        const { url, videoUrl, meta: metaIn, budgetMs } = JSON.parse(body)
+        // the caller owns the ceiling; clamp so a bad value cannot hold a
+        // container open or make the retry pointless
+        const budget = Math.max(20000, Math.min(Number(budgetMs) || DEFAULT_BUDGET_MS, 240000))
+        const deadlineAt = Date.now() + budget
         if (!url && !videoUrl) { res.writeHead(400); res.end(JSON.stringify({ error: 'URL or videoUrl required' })); return }
 
         // 1. Metadata. Direct-media path (Instagram via Apify): the caller supplies
@@ -433,7 +548,11 @@ const server = http.createServer((req, res) => {
           }
         } else {
           try {
-            meta = getMetadata(url)
+            meta = await withChallengeRetry(() => getMetadata(url), {
+              deadlineAt,
+              onRetry: ({ attempt, waitMs, msLeft }) =>
+                console.log(`[challenge] attempt ${attempt} failed, waiting ${waitMs}ms (${Math.round(msLeft / 1000)}s of budget left)`),
+            })
           } catch (ytErr) {
             // ⚠️ "TRY A DIFFERENT URL" IS THE WRONG ADVICE FOR THE FAILURE THIS
             // ACTUALLY HITS, and it sent two investigations down the wrong path.
@@ -444,22 +563,29 @@ const server = http.createServer((req, res) => {
             // egress IP changes on every deploy, so another URL fails exactly the
             // same way while a redeploy fixes it. Say that instead.
             const m = String(ytErr.message || '')
-            // ⚠️ TIKTOK'S OWN WORDING WAS NOT IN THIS PATTERN, AND THAT IS WHY THE
-            // ADVICE ABOVE STILL REACHED PEOPLE. On 2026-08-31 the live failure
-            // read "[TikTok] Your IP address is blocked from accessing this post"
-            // — which matched none of these, fell through to the generic branch,
-            // and was reported upstream as a hard IP ban. It is not: the same
-            // service, same version, same IP analysed three videos end to end
-            // hours later. TikTok says "blocked" for a transient per-IP challenge,
-            // so treat its blocked/rate-limit wording as the challenge it is.
-            const challenged = /Unexpected response from webpage request|_solve_challenge|IP address is blocked|blocked from accessing|rate.?limit|too many requests|captcha|verify.{0,12}human/i.test(m)
+            const kind = ytErr.kind || classifyYtdlpError(m, ytErr.webpageBytes)
+            // ⚠️ FOUR CAUSES, AND ONLY ONE OF THEM WAS EVER WORTH ANOTHER ATTEMPT.
+            // They used to collapse into one message that told the creator to try
+            // a different URL — advice that is wrong for three of the four.
+            const say = {
+              // reproducible, and another attempt cannot change it
+              video_blocked: 'TikTok will not serve this particular video to this server. Other videos are unaffected — it is this post, not your connection.',
+              // transient, and we already spent the budget retrying it
+              challenge: ytErr.exhausted
+                ? `The platform challenged this server on every attempt (${ytErr.attempts || 1}). It affects every video, not this one, and it usually clears on its own within the hour.`
+                : 'The platform is challenging this server right now. It affects every video, not this one — it usually clears on its own.',
+              // our image is broken. Retrying costs 40s to fail identically.
+              config: 'This server is misconfigured for video extraction — a missing JavaScript runtime or impersonation target. This is our fault, not the video.',
+              permanent: 'That video is not available — it may be private, removed, or restricted where this server runs.',
+              unknown: 'Could not fetch that video.',
+            }[kind] || 'Could not fetch that video.'
             res.writeHead(422)
             res.end(JSON.stringify({
-              error: challenged
-                ? 'The platform is challenging this server right now. It affects every video, not this one — it usually clears on its own; a redeploy moves the server to a new address and clears it immediately.'
-                : 'Could not fetch video. The platform may be blocking this server — try a different URL.',
+              error: say,
               detail: m,
-              ...(challenged ? { cause: 'platform_challenge' } : {}),
+              cause: kind === 'challenge' ? 'platform_challenge' : kind,
+              ...(typeof ytErr.webpageBytes === 'number' ? { webpage_bytes: ytErr.webpageBytes } : {}),
+              ...(ytErr.exhausted ? { retried: ytErr.attempts, budget_ms: budget } : {}),
             }))
             return
           }
